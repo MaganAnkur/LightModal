@@ -6,125 +6,147 @@
  */
 
 import React from 'react';
-import type {PropsWithChildren} from 'react';
+
+import {StyleSheet, View, Text, ActivityIndicator} from 'react-native';
 import {
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  useColorScheme,
-  View,
-} from 'react-native';
-
+  Tensor,
+  TensorflowModel,
+  useTensorflowModel,
+} from 'react-native-fast-tflite';
 import {
-  Colors,
-  DebugInstructions,
-  Header,
-  LearnMoreLinks,
-  ReloadInstructions,
-} from 'react-native/Libraries/NewAppScreen';
+  Camera,
+  useCameraDevice,
+  useCameraPermission,
+  useFrameProcessor,
+} from 'react-native-vision-camera';
+import {useResizePlugin} from 'vision-camera-resize-plugin';
 
-type SectionProps = PropsWithChildren<{
-  title: string;
-}>;
-
-function Section({children, title}: SectionProps): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
+function tensorToString(tensor: Tensor): string {
+  return `\n  - ${tensor.dataType} ${tensor.name}[${tensor.shape}]`;
+}
+function modelToString(model: TensorflowModel): string {
   return (
-    <View style={styles.sectionContainer}>
-      <Text
-        style={[
-          styles.sectionTitle,
-          {
-            color: isDarkMode ? Colors.white : Colors.black,
-          },
-        ]}>
-        {title}
-      </Text>
-      <Text
-        style={[
-          styles.sectionDescription,
-          {
-            color: isDarkMode ? Colors.light : Colors.dark,
-          },
-        ]}>
-        {children}
-      </Text>
-    </View>
+    `TFLite Model (${model.delegate}):\n` +
+    `- Inputs: ${model.inputs.map(tensorToString).join('')}\n` +
+    `- Outputs: ${model.outputs.map(tensorToString).join('')}`
   );
 }
 
 function App(): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
+  const {hasPermission, requestPermission} = useCameraPermission();
+  const device = useCameraDevice('back');
+  // from https://www.kaggle.com/models/tensorflow/efficientdet/frameworks/tfLite
+  const model = useTensorflowModel(require('./model.tflite'));
+  const actualModel = model.state === 'loaded' ? model.model : undefined;
 
-  const backgroundStyle = {
-    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
-  };
+  React.useEffect(() => {
+    if (actualModel == null) {
+      return;
+    }
+    console.log(`Model loaded! Shape:\n${modelToString(actualModel)}]`);
+  }, [actualModel]);
 
-  /*
-   * To keep the template simple and small we're adding padding to prevent view
-   * from rendering under the System UI.
-   * For bigger apps the recommendation is to use `react-native-safe-area-context`:
-   * https://github.com/AppAndFlow/react-native-safe-area-context
-   *
-   * You can read more about it here:
-   * https://github.com/react-native-community/discussions-and-proposals/discussions/827
-   */
-  const safePadding = '5%';
+  const {resize} = useResizePlugin();
+
+  const frameProcessor = useFrameProcessor(
+    frame => {
+      'worklet';
+      if (actualModel == null) {
+        // model is still loading...
+        return;
+      }
+
+      console.log(`Running inference on ${frame}`);
+      const resized = resize(frame, {
+        scale: {
+          width: 416,
+          height: 416,
+        },
+        pixelFormat: 'rgb',
+        dataType: 'float32',
+      });
+      const result = actualModel.runSync([resized]);
+
+      // Debug the model output structure
+      console.log('Model output structure:', {
+        length: result.length,
+        types: result.map((tensor, index) => ({
+          index,
+          type: tensor?.constructor?.name,
+          length: tensor?.length,
+        })),
+      });
+
+      // Safely access the scores with error handling
+      let scores: number[] = [];
+      try {
+        if (result && result.length > 0) {
+          // Try to find the scores tensor - it might be in a different position
+          const scoresTensor = result.find(
+            tensor => tensor && tensor.length > 0,
+          );
+          if (scoresTensor) {
+            scores = Array.from(scoresTensor as Float32Array);
+          }
+        }
+      } catch (error) {
+        console.error('Error processing model output:', error);
+      }
+
+      const validDetections = scores.filter(score => score > 0.5).length;
+      console.log('Number of valid detections: ' + validDetections);
+
+      // Show scores in a more readable format
+      const detectionDetails = scores
+        .map((score, index) => ({
+          detection: index + 1,
+          confidence: `${(score * 100).toFixed(1)}%`,
+          isValid: score > 0.5,
+        }))
+        .filter(det => det.isValid);
+
+      console.log('Valid detections with confidence scores:');
+      console.log(JSON.stringify(detectionDetails, null, 2));
+    },
+    [actualModel],
+  );
+
+  React.useEffect(() => {
+    requestPermission();
+  }, [requestPermission]);
+
+  console.log(`Model: ${model.state} (${model.model != null})`);
 
   return (
-    <View style={backgroundStyle}>
-      <StatusBar
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor={backgroundStyle.backgroundColor}
-      />
-      <ScrollView
-        style={backgroundStyle}>
-        <View style={{paddingRight: safePadding}}>
-          <Header/>
-        </View>
-        <View
-          style={{
-            backgroundColor: isDarkMode ? Colors.black : Colors.white,
-            paddingHorizontal: safePadding,
-            paddingBottom: safePadding,
-          }}>
-          <Section title="Step One">
-            Edit <Text style={styles.highlight}>App.tsx</Text> to change this
-            screen and then come back to see your edits.
-          </Section>
-          <Section title="See Your Changes">
-            <ReloadInstructions />
-          </Section>
-          <Section title="Debug">
-            <DebugInstructions />
-          </Section>
-          <Section title="Learn More">
-            Read the docs to discover what to do next:
-          </Section>
-          <LearnMoreLinks />
-        </View>
-      </ScrollView>
+    <View style={styles.container}>
+      {hasPermission && device != null ? (
+        <Camera
+          device={device}
+          style={StyleSheet.absoluteFill}
+          isActive={true}
+          frameProcessor={frameProcessor}
+          pixelFormat="yuv"
+        />
+      ) : (
+        <Text>No Camera available.</Text>
+      )}
+
+      {model.state === 'loading' && (
+        <ActivityIndicator size="small" color="white" />
+      )}
+
+      {model.state === 'error' && (
+        <Text>Failed to load model! {model.error.message}</Text>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  sectionContainer: {
-    marginTop: 32,
-    paddingHorizontal: 24,
-  },
-  sectionTitle: {
-    fontSize: 24,
-    fontWeight: '600',
-  },
-  sectionDescription: {
-    marginTop: 8,
-    fontSize: 18,
-    fontWeight: '400',
-  },
-  highlight: {
-    fontWeight: '700',
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
 
