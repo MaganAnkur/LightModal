@@ -19,6 +19,7 @@ import {
   useCameraPermission,
   useFrameProcessor,
 } from 'react-native-vision-camera';
+import {useRunOnJS} from 'react-native-worklets-core';
 import {useResizePlugin} from 'vision-camera-resize-plugin';
 
 function tensorToString(tensor: Tensor): string {
@@ -38,6 +39,11 @@ function App(): React.JSX.Element {
   // from https://www.kaggle.com/models/tensorflow/efficientdet/frameworks/tfLite
   const model = useTensorflowModel(require('./model.tflite'));
   const actualModel = model.state === 'loaded' ? model.model : undefined;
+  const [isCameraActive, setIsCameraActive] = React.useState(true);
+
+  const handleCameraActive = useRunOnJS(() => {
+    setIsCameraActive(false);
+  }, []);
 
   React.useEffect(() => {
     if (actualModel == null) {
@@ -107,6 +113,9 @@ function App(): React.JSX.Element {
 
       console.log('Valid detections with confidence scores:');
       console.log(JSON.stringify(detectionDetails, null, 2));
+      if (validDetections >= 10) {
+        handleCameraActive();
+      }
     },
     [actualModel],
   );
@@ -123,7 +132,7 @@ function App(): React.JSX.Element {
         <Camera
           device={device}
           style={StyleSheet.absoluteFill}
-          isActive={true}
+          isActive={isCameraActive}
           frameProcessor={frameProcessor}
           pixelFormat="yuv"
         />
