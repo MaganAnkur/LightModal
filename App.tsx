@@ -10,8 +10,9 @@ import {
   Canvas,
   ColorType,
   Image,
+  PaintStyle,
+  Rect,
   Skia,
-  SkImage,
 } from '@shopify/react-native-skia';
 
 import React from 'react';
@@ -23,11 +24,17 @@ import {
   useTensorflowModel,
 } from 'react-native-fast-tflite';
 import {
+  useSharedValue,
+  useAnimatedReaction,
+  runOnJS,
+} from 'react-native-reanimated';
+import {
   Camera,
   useCameraDevice,
   useCameraPermission,
   useFrameProcessor,
   useCameraFormat,
+  useSkiaFrameProcessor,
 } from 'react-native-vision-camera';
 import {useRunOnJS} from 'react-native-worklets-core';
 import {useResizePlugin} from 'vision-camera-resize-plugin';
@@ -50,7 +57,18 @@ function App(): React.JSX.Element {
   const model = useTensorflowModel(require('./model.tflite'));
   const actualModel = model.state === 'loaded' ? model.model : undefined;
   const [isCameraActive, setIsCameraActive] = React.useState(true);
-  const [resizedImage, setResizedImage] = React.useState<SkImage | null>(null);
+  //const [displayDetections, setDisplayDetections] = React.useState([]);
+
+  // Create shared value for detections
+  //const sharedDetections = useSharedValue([]);
+
+  /*  useAnimatedReaction(
+    () => sharedDetections.value,
+    (result) => {
+      // Use runOnJS to call setState from worklet
+      runOnJS(setDisplayDetections)(result || []);
+    }
+  ); */
 
   /*  const handleCameraActive = useRunOnJS(() => {
     setIsCameraActive(false);
@@ -59,8 +77,10 @@ function App(): React.JSX.Element {
   const processOutput = useRunOnJS((output: Float32Array) => {
     const detections = postprocess(output); // Drastically lowered threshold for debugging
 
-    console.log('Detections:', detections);
-    return detections;
+    console.log('Detections:', JSON.stringify(detections, null, 2));
+
+    //sharedDetections.value = detections;
+    //setDisplayDetections(detections);
     /*   const topDetections = detections
       .sort((a, b) => b.confidence - a.confidence)
       .slice(0, 10);
@@ -176,17 +196,17 @@ function App(): React.JSX.Element {
         dataType: 'float32',
       });
 
-      console.log('🔍 resized RGB[0–9]:', resized.slice(0, 10));
-      const min = Math.min(...resized.slice(0, 1000));
-      const max = Math.max(...resized.slice(0, 1000));
-      console.log(`📏 resized RGB range: min=${min}, max=${max}`);
+      // console.log('🔍 resized RGB[0–9]:', resized.slice(0, 10));
+      // const min = Math.min(...resized.slice(0, 1000));
+      // const max = Math.max(...resized.slice(0, 1000));
+      // console.log(`📏 resized RGB range: min=${min}, max=${max}`);
 
       const scaled = new Float32Array(resized.length);
       for (let i = 0; i < resized.length; i++) {
         scaled[i] = resized[i] * 255;
       }
 
-      console.log('🎛 scaled RGB[0–9]:', scaled.slice(0, 10));
+      // console.log('🎛 scaled RGB[0–9]:', scaled.slice(0, 10));
 
       // Convert RGB → BGR
       /*  const bgr = new Float32Array(resized.length);
@@ -204,24 +224,58 @@ function App(): React.JSX.Element {
       }
 
       // Optional: Log first row
-      console.log('Runtime BGR slice [0..29]:', bgr.slice(0, 30));
+      // console.log('Runtime BGR slice [0..29]:', bgr.slice(0, 30));
 
       // log out first row of image (and 1st pixel R value of the second row)
-      console.log('first row plus 1px', resized.slice(0, 416 * 3 + 1));
+      // console.log('first row plus 1px', resized.slice(0, 416 * 3 + 1));
       //const result = actualModel.runSync([resized]);
       const result = actualModel.runSync([bgr]);
-      if (result && result.length > 0 && result[0]) {
+      /* if (result && result.length > 0 && result[0]) {
         console.log(
           'App.tsx - Frame processor - result[0] length:',
           result[0].length,
         );
         console.log('whole result', result);
-      }
+      } */
 
       try {
         const output = result[0] as Float32Array; // Ensure correct type
-        console.log('🔬 Raw output (first 20):', output.slice(0, 20));
-        processOutput(output);
+        //console.log('🔬 Raw output (first 20):', output.slice(0, 20));
+        //processOutput(output);
+        const detections = postprocess(output);
+        console.log('New Detections:', JSON.stringify(detections, null, 2));
+        //frame.render();
+        /*  for (const detection of detections) {
+          const paint = Skia.Paint();
+          paint.setColor(Skia.Color('red'));
+          paint.setStyle(PaintStyle.Stroke);
+          paint.setStrokeWidth(2);
+
+          // Use a scale factor to make boxes smaller
+          const scaleFactor = 0.2; // Try with 80% of the original size
+
+          // Center the box better
+          const centerX =
+            detection.boundingBox.left + detection.boundingBox.width / 2;
+          const centerY =
+            detection.boundingBox.top + detection.boundingBox.height / 2;
+
+          // Calculate new dimensions
+          const newWidth =
+            detection.boundingBox.width * frame.width * scaleFactor;
+          const newHeight =
+            detection.boundingBox.height * frame.height * scaleFactor;
+
+          frame.drawRect(
+            {
+              x: centerX * frame.width - newWidth / 2,
+              y: centerY * frame.height - newHeight / 2,
+              width: newWidth,
+              height: newHeight,
+            },
+            paint,
+          );
+        } */
       } catch (error) {
         console.error('Error processing output:', error);
       }
@@ -247,15 +301,33 @@ function App(): React.JSX.Element {
   return (
     <View style={styles.container}>
       {hasPermission && device != null ? (
-        <Camera
-          device={device}
-          style={StyleSheet.absoluteFill}
-          isActive={isCameraActive}
-          frameProcessor={frameProcessor}
-          pixelFormat="rgb"
-          videoStabilizationMode="auto"
-          format={format}
-        />
+        <>
+          <Camera
+            device={device}
+            style={StyleSheet.absoluteFill}
+            isActive={isCameraActive}
+            frameProcessor={frameProcessor}
+            pixelFormat="rgb"
+            videoStabilizationMode="auto"
+            format={format}
+          />
+
+          {/* Overlay Canvas with direct onDraw prop */}
+          {/* <Canvas style={StyleSheet.absoluteFill}>
+            {displayDetections?.map((detection, index) => (
+              <Rect
+                key={index}
+                x={detection.boundingBox.left * 416}
+                y={detection.boundingBox.top * 416}
+                width={detection.boundingBox.width * 416}
+                height={detection.boundingBox.height * 416}
+                color="red"
+                style="stroke"
+                strokeWidth={2}
+              />
+            ))}
+          </Canvas> */}
+        </>
       ) : (
         <Text>No Camera available.</Text>
       )}
@@ -292,10 +364,12 @@ const IOU_THRESHOLD = 0.45;
 
 // Helper functions
 function logistic(x) {
+  'worklet';
   return x > 0 ? 1 / (1 + Math.exp(-x)) : Math.exp(x) / (1 + Math.exp(x));
 }
 
 function reshapeTo3D(flatArray, dim1 = 13, dim2 = 13, dim3 = 45) {
+  'worklet';
   const result = [];
   for (let i = 0; i < dim1; i++) {
     const slice = [];
@@ -313,6 +387,7 @@ function reshapeTo3D(flatArray, dim1 = 13, dim2 = 13, dim3 = 45) {
 }
 
 function extractBB(predictionOutput, anchors) {
+  'worklet';
   const height = predictionOutput.length;
   const width = predictionOutput[0].length;
   const numAnchor = anchors.length;
@@ -375,6 +450,7 @@ function nonMaximumSuppression(
   maxDetections,
   probThreshold,
 ) {
+  'worklet';
   const maxProbs = classProbs.map(probs => Math.max(...probs));
   const maxClasses = classProbs.map(probs => probs.indexOf(Math.max(...probs)));
 
@@ -438,6 +514,7 @@ function postprocess(
   probThreshold = 0.6,
   maxDetections = 20,
 ) {
+  'worklet';
   // Reshape the output to 3D if it's flat
   const output3D = Array.isArray(predictionOutput[0])
     ? predictionOutput
