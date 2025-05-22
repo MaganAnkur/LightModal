@@ -56,6 +56,9 @@ function App(): React.JSX.Element {
   // from https://www.kaggle.com/models/tensorflow/efficientdet/frameworks/tfLite
   const model = useTensorflowModel(require('./model.tflite'));
   const actualModel = model.state === 'loaded' ? model.model : undefined;
+  const goodBadModel = useTensorflowModel(require('./good-bad-model.tflite'));
+  const actualGoodBadModel =
+    goodBadModel.state === 'loaded' ? goodBadModel.model : undefined;
   const [isCameraActive, setIsCameraActive] = React.useState(true);
   //const [displayDetections, setDisplayDetections] = React.useState([]);
 
@@ -102,7 +105,7 @@ function App(): React.JSX.Element {
       handleCameraActive();
     } */
   }, []);
-  /* 
+  /*
   const makeSkiaImage = useRunOnJS((resized: Float32Array) => {
     // log out first row of image (and 1st pixel R value of the second row)
     console.log('first skia row', resized.slice(0, 416 * 3 + 1));
@@ -177,6 +180,19 @@ function App(): React.JSX.Element {
     }
   }, [actualModel]);
 
+  React.useEffect(() => {
+    if (actualGoodBadModel == null) {
+      return;
+    }
+    console.log(`Model loaded! Shape:\n${modelToString(actualGoodBadModel)}]`);
+    if (actualGoodBadModel.outputs && actualGoodBadModel.outputs.length > 0) {
+      console.log(
+        'App.tsx - Model Output Details from plugin:',
+        JSON.stringify(actualGoodBadModel.outputs),
+      );
+    }
+  }, [actualGoodBadModel]);
+
   const {resize} = useResizePlugin();
 
   const frameProcessor = useFrameProcessor(
@@ -243,6 +259,53 @@ function App(): React.JSX.Element {
         //console.log('🔬 Raw output (first 20):', output.slice(0, 20));
         //processOutput(output);
         const detections = postprocess(output);
+        if (detections.length > 0) {
+          console.log('frtame', JSON.stringify(frame));
+          const resizeDetectedFrame = resize(frame, {
+            scale: {
+              width: 224,
+              height: 224,
+            },
+
+            pixelFormat: 'rgb',
+            dataType: 'float32',
+          });
+
+          const scaledTo255 = new Float32Array(resizeDetectedFrame.length);
+          for (let i = 0; i < resizeDetectedFrame.length; i++) {
+            scaledTo255[i] = resizeDetectedFrame[i] * 255;
+          }
+
+          // Run prediction using good/bad model
+          if (actualGoodBadModel != null) {
+            const predictionOutput = actualGoodBadModel.runSync([
+              scaledTo255,
+            ]);
+
+            const predictionArray = predictionOutput[0] as Float32Array;
+
+            // Get highest confidence class
+            let maxProb = -Infinity;
+            let maxIndex = -1;
+            for (let i = 0; i < predictionArray.length; i++) {
+              if (predictionArray[i] > maxProb) {
+                maxProb = predictionArray[i];
+                maxIndex = i;
+              }
+            }
+
+            // Map to label (make sure you load them)
+            const goodBadLabels = ['good', 'bad']; // Replace with actual labels if different
+            const predictedLabel = goodBadLabels[maxIndex];
+
+            console.log(
+              `🧠 Good/Bad Model Prediction: ${predictedLabel} ${
+                maxProb}`,
+            );
+          } else {
+            console.warn('Good/Bad model not loaded.');
+          }
+        }
         console.log('New Detections:', JSON.stringify(detections, null, 2));
         //frame.render();
         /*  for (const detection of detections) {
@@ -462,7 +525,9 @@ function nonMaximumSuppression(
 
   while (selectedBoxes.length < maxDetections) {
     const i = maxProbs.indexOf(Math.max(...maxProbs));
-    if (maxProbs[i] < probThreshold) break;
+    if (maxProbs[i] < probThreshold) {
+      break;
+    }
 
     selectedBoxes.push(boxes[i]);
     selectedClasses.push(maxClasses[i]);
@@ -546,7 +611,7 @@ function postprocess(
 }
 
 /**
- * 
+ *
  * for (let i = 0; i < resized.data.length; i++) {
   resized.data[i] /= 255;
 }
